@@ -1,0 +1,96 @@
+---
+# Usage:
+# ansible-playbook server_info_html.yaml --ask-become-pass
+# --ask-become-pass :: To get root password as user input
+
+- name: Execute a sample HTML file on browser port number 8080
+  hosts: localhost
+  gather_facts: true
+  become: true
+  vars:
+    html_file: "index.html"
+    web_service: "apache2"
+    server_directory: "/var/www/html"
+
+  tasks:
+    - name: Get OS Version from file
+      set_fact:
+        os_release_content: "{{ lookup('file', '/etc/os-release') }}"
+
+    - name: Get OS Release
+      set_fact:
+        os_release: "{{ os_release_content | regex_findall('^NAME=.*') | first }}"
+
+    - name: Select webserver package httpd as per OS Release
+      set_fact:
+        web_service: "httpd"
+      when: "'CentOS' in os_release or 'Fedora' in os_release"
+
+    - name: Update Package Manager Module
+      package:
+        update_cache: yes
+
+    - name: Install Apache Server Using Package Module
+      package:
+        name: "{{ web_service }}"
+        update_cache: yes
+        state: latest
+
+    - name: Verify {{ server_directory }} existence
+      stat:
+        path: "{{ server_directory }}"
+      register: directory_exist
+
+    - name: Collect Disk Usage Information Using Command
+      shell: "df -h"
+      register: disk_usage
+      ignore_errors: true
+
+    - name: Fail if Disk Usage Command Execution Failed
+      fail:
+        msg: "FAILED: To execute 'df -h' command, so unable to fetch the disk usage information"
+      when: disk_usage.rc != 0
+
+    - name: Disk Usage Information Ising Ansible Gather Facts for each of Disk
+      debug:
+        msg: "{{ item }}"
+      with_items:
+        - "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.device }} -> {{ item.size_available }}"
+
+    - name: Show kernel version, release and date time
+      debug:
+        msg:
+          - "Kernel Version :: {{ ansible_kernel_version }}"
+          - "Kernel Release :: {{ ansible_kernel }}"
+          - "Date           :: {{ ansible_date_time.date }}"
+          - "Time           :: {{ ansible_date_time.time }}"
+          - "Disk Usage     :: {{ disk_usage.stdout_lines }}"
+
+    - name: Setting up variables to prepare index.html file with updated values
+      set_fact:
+        kernel_version: "{{ ansible_kernel_version }}"
+        kernel_release: "{{ ansible_kernel }}"
+        current_date: "{{ ansible_date_time.date }}"
+        current_time: "{{ ansible_date_time.time }}"
+        disk_usage_info: "{{ disk_usage.stdout_lines | to_nice_json }}"
+
+    - name: Generating index.html
+      template:
+        src: jinja-templates/index.html.j2
+        dest: "{{ html_file }}"
+        mode: a+x
+
+    - name: Copy newly created index.html file to /var/www/html
+      copy:
+        src: "{{ html_file }}"
+        dest: "{{ server_directory }}"
+      when: directory_exist.stat.exists
+      notify: Restart apache service
+
+  handlers:
+    - name: Restart apache service
+      service:
+        name: "{{ web_service }}"
+        state: restarted
