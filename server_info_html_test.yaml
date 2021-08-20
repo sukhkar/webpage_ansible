@@ -1,0 +1,99 @@
+---
+# Usage:
+# ansible-playbook server_info_html_test.yaml --ask-become-pass
+# --ask-become-pass :: To get root password from user
+
+- name: Verify Sample HTML is running with expected content
+  hosts: localhost
+  gather_facts: true
+  become: true
+  vars:
+    html_file: "index.html"
+    web_service: "apache2"
+    server_directory: "/var/www/html"
+
+  tasks:
+    - name: Get OS Version from file
+      set_fact:
+        os_release_content: "{{ lookup('file', '/etc/os-release') }}"
+
+    - name: Get OS Release
+      set_fact:
+        os_release: "{{ os_release_content | regex_findall('^NAME=.*') | first }}"
+
+    - name: Select webserver package httpd as per OS Release
+      set_fact:
+        web_service: "httpd"
+      when: "'CentOS' in os_release or 'Fedora' in os_release"
+
+    - name: Get list of installed packages
+      package_facts:
+        manager: "auto"
+
+    - name: Verify wget is installed
+      package:
+        name: "wget"
+        state: latest
+      when: "'wget' not in ansible_facts.packages"
+
+    - name: Update Package Manager Module
+      package:
+        update_cache: yes
+      notify: Restart apache service
+
+    - name: Verify {{ html_file }} is available in current directory
+      stat:
+        path: "{{ html_file }}"
+      register: html_file_exist
+
+    - name: Remove {{ html_file }} if it exists
+      file:
+        path: "{{ html_file }}"
+        state: absent
+      when: html_file_exist.stat.exists
+
+    - name: Download {{ html_file }} page from browser
+      shell: "wget localhost:8080"
+      register: download_file
+      ignore_errors: true
+
+    - name: Fail if Download Command Execution Failed
+      fail:
+        msg: "FAILED: To download index.html"
+      when: download_file.rc != 0
+
+    - name: Verify the existance of downloaded {{ html_file }} file and original {{ server_directory }}/{{ html_file }} file
+      stat:
+        path: "{{ item }}"
+      register: html_files_stat
+      with_items:
+        - "{{ html_file }}"
+        - "{{ server_directory }}/{{ html_file }}"
+
+    - name: Verifying Files Existance
+      fail:
+        msg: "{{ item.item }} is not found"
+      when: item.stat.exists | bool == false
+      loop: "{{ html_files_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - fail:
+        msg:
+          - "File content of both the files : {{ html_files_stat.results[0].item }} and {{ html_files_stat.results[1].item }} are not equal"
+          - "{{ html_files_stat.results[0].item }} => {{ html_files_stat.results[0].stat.checksum }}"
+          - "{{ html_files_stat.results[1].item }} => {{ html_files_stat.results[1].stat.checksum }}"
+      when: "html_files_stat.results[0].stat.checksum != html_files_stat.results[0].stat.checksum"
+
+    - debug:
+        msg:
+          - "File content of both the files : {{ html_files_stat.results[0].item }} and {{ html_files_stat.results[1].item }} are equal"
+          - "{{ html_files_stat.results[0].item }} => {{ html_files_stat.results[0].stat.checksum }}"
+          - "{{ html_files_stat.results[1].item }} => {{ html_files_stat.results[1].stat.checksum }}"
+      when: "html_files_stat.results[0].stat.checksum == html_files_stat.results[0].stat.checksum"
+
+  handlers:
+    - name: Restart apache service
+      service:
+        name: "{{ web_service }}"
+        state: restarted
