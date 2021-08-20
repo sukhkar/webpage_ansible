@@ -30,7 +30,7 @@
       package:
         update_cache: yes
 
-    - name: Install Apache Server Using Package Module
+    - name: Install {{ web_service }} Using Package Module
       package:
         name: "{{ web_service }}"
         update_cache: yes
